@@ -1,0 +1,150 @@
+services:
+  postgres_shard1:
+    image: pgvector/pgvector:pg16
+    container_name: postgres_shard1
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "shared_preload_libraries=vector"
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gr5}
+      POSTGRES_USER: ${POSTGRES_USER:-gr5}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      TZ: Europe/Berlin
+    volumes:
+      - ./shared/data/postgres_shard1:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gr5} -d ${POSTGRES_DB:-gr5}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres_shard2:
+    image: pgvector/pgvector:pg16
+    container_name: postgres_shard2
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "shared_preload_libraries=vector"
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gr5}
+      POSTGRES_USER: ${POSTGRES_USER:-gr5}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      TZ: Europe/Berlin
+    volumes:
+      - ./shared/data/postgres_shard2:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gr5} -d ${POSTGRES_DB:-gr5}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  pgbouncer:
+    build:
+      context: ./infra/pgbouncer
+    container_name: pgbouncer
+    restart: unless-stopped
+    ports:
+      - "6432:6432"
+    depends_on:
+      postgres_shard1:
+        condition: service_healthy
+      postgres_shard2:
+        condition: service_healthy
+
+  writer_service:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: writer_service
+    restart: unless-stopped
+    command: ["uvicorn", "app.writer_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8001:8000"
+    environment:
+      PGUSER: ${POSTGRES_USER:-gr5}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
+      PGBOUNCER_HOST: pgbouncer
+      PGBOUNCER_PORT: 6432
+      SHARD_COUNT: 2
+      SNOWFLAKE_WORKER_ID: 1
+    depends_on:
+      - pgbouncer
+
+  reader_service:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: reader_service
+    restart: unless-stopped
+    command: ["uvicorn", "app.reader_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8002:8000"
+    environment:
+      PGUSER: ${POSTGRES_USER:-gr5}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
+      PGBOUNCER_HOST: pgbouncer
+      PGBOUNCER_PORT: 6432
+      SHARD_COUNT: 2
+      SNOWFLAKE_WORKER_ID: 2
+    depends_on:
+      - pgbouncer
+
+  producer_service:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: producer_service
+    restart: unless-stopped
+    command: ["python", "-m", "app.producer_service.main"]
+    environment:
+      PGUSER: ${POSTGRES_USER:-gr5}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
+      PGBOUNCER_HOST: pgbouncer
+      PGBOUNCER_PORT: 6432
+      SHARD_COUNT: 2
+      SNOWFLAKE_WORKER_ID: 3
+      PRODUCER_INTERVAL_SECONDS: 2
+    depends_on:
+      - pgbouncer
+
+  wal_monitor:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: wal_monitor
+    restart: unless-stopped
+    command: ["python", "-m", "app.wal_monitor.main"]
+    environment:
+      PGUSER: ${POSTGRES_USER:-gr5}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
+      PGDATABASE: ${POSTGRES_DB:-gr5}
+      SHARD1_HOST: postgres_shard1
+      SHARD2_HOST: postgres_shard2
+      SHARD_COUNT: 2
+      WAL_POLL_SECONDS: 3
+    depends_on:
+      postgres_shard1:
+        condition: service_healthy
+      postgres_shard2:
+        condition: service_healthy
