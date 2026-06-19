@@ -1,38 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import random
 from decimal import Decimal
 
-from app.common.db import ShardRouter
+from app.common.db import DatabasePool
 from app.common.repository import OrderRepository
 from app.common.settings import settings
-from app.common.snowflake import SnowflakeGenerator
+
+logging.basicConfig(level=settings.log_level)
+logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
     interval = float(os.getenv("PRODUCER_INTERVAL_SECONDS", "2"))
-    router = ShardRouter()
-    await router.start()
-    repo = OrderRepository(
-        router=router,
-        snowflake=SnowflakeGenerator(worker_id=settings.snowflake_worker_id),
-    )
+    db = DatabasePool()
+    await db.start()
+    repo = OrderRepository(db=db)
     try:
         while True:
-            user_id = random.randint(1, 10)
-            amount = Decimal(random.randint(100, 10000)) / Decimal("100")
+            # Demo data generator only; not used for secrets or security decisions.
+            user_id = random.randint(1, 10)  # nosec B311
+            amount = Decimal(random.randint(100, 10000)) / Decimal("100")  # nosec B311
             order = await repo.create_order(
                 user_id=user_id,
                 amount=amount,
-                status=random.choice(["pending", "pending", "paid"]),
+                status=random.choice(["pending", "pending", "paid"]),  # nosec B311
                 payload={"source": "producer_service"},
             )
-            print(f"created order_id={order['id']} user_id={user_id} shard={order['shard']}", flush=True)
+            logger.info("created order_id=%s user_id=%s", order["id"], user_id)
             await asyncio.sleep(interval)
     finally:
-        await router.stop()
+        await db.stop()
 
 
 if __name__ == "__main__":

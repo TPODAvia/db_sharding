@@ -1,0 +1,14 @@
+.git
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+shared/data/
+*.zip
+
+docker/secrets/*.txt
+!docker/secrets/*.example
+infra/tls/certs/*.key
+infra/nginx/certs/*.key

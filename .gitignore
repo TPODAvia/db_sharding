@@ -1,1 +1,13 @@
-shared/
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+shared/data/
+shared/backups/
+docker/secrets/*.txt
+!docker/secrets/*.example
+infra/tls/certs/*
+!infra/tls/certs/.gitkeep
+infra/nginx/certs/*.key
+infra/nginx/certs/*.crt

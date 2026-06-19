@@ -1,150 +1,408 @@
-services:
-  postgres_shard1:
-    image: pgvector/pgvector:pg16
-    container_name: postgres_shard1
-    restart: unless-stopped
-    command:
-      - "postgres"
-      - "-c"
-      - "wal_level=logical"
-      - "-c"
-      - "max_wal_senders=10"
-      - "-c"
-      - "max_replication_slots=10"
-      - "-c"
-      - "shared_preload_libraries=vector"
-    ports:
-      - "5433:5432"
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-gr5}
-      POSTGRES_USER: ${POSTGRES_USER:-gr5}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
-      TZ: Europe/Berlin
-    volumes:
-      - ./shared/data/postgres_shard1:/var/lib/postgresql/data
-      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gr5} -d ${POSTGRES_DB:-gr5}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
+x-citus-common: &citus_common
+  build:
+    context: .
+    dockerfile: infra/citus.Dockerfile
+    args:
+      CITUS_IMAGE: ${CITUS_IMAGE:-citusdata/citus:14-pg16}
+  restart: unless-stopped
+  command:
+    - postgres
+    - -c
+    - shared_preload_libraries=citus
+    - -c
+    - password_encryption=scram-sha-256
+    - -c
+    - statement_timeout=30s
+    - -c
+    - idle_in_transaction_session_timeout=60s
+    - -c
+    - ssl=on
+    - -c
+    - ssl_cert_file=/var/lib/postgresql/tls/server.crt
+    - -c
+    - ssl_key_file=/var/lib/postgresql/tls/server.key
+    - -c
+    - ssl_ca_file=/var/lib/postgresql/tls/ca.crt
+  environment: &postgres_env
+    POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-/run/secrets/postgres_password}
+    APP_DB_USER: ${APP_DB_USER:-app_user}
+    APP_DB_PASSWORD: ${APP_DB_PASSWORD:-}
+    APP_DB_PASSWORD_FILE: ${APP_DB_PASSWORD_FILE:-/run/secrets/app_db_password}
+    MIGRATION_DB_USER: ${MIGRATION_DB_USER:-migration_user}
+    MIGRATION_DB_PASSWORD: ${MIGRATION_DB_PASSWORD:-}
+    MIGRATION_DB_PASSWORD_FILE: ${MIGRATION_DB_PASSWORD_FILE:-/run/secrets/migration_db_password}
+    READONLY_DB_USER: ${READONLY_DB_USER:-readonly_user}
+    READONLY_DB_PASSWORD: ${READONLY_DB_PASSWORD:-}
+    READONLY_DB_PASSWORD_FILE: ${READONLY_DB_PASSWORD_FILE:-/run/secrets/readonly_db_password}
+    MONITORING_DB_USER: ${MONITORING_DB_USER:-monitoring_user}
+    MONITORING_DB_PASSWORD: ${MONITORING_DB_PASSWORD:-}
+    MONITORING_DB_PASSWORD_FILE: ${MONITORING_DB_PASSWORD_FILE:-/run/secrets/monitoring_db_password}
+    BACKUP_DB_USER: ${BACKUP_DB_USER:-backup_user}
+    BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD:-}
+    BACKUP_DB_PASSWORD_FILE: ${BACKUP_DB_PASSWORD_FILE:-/run/secrets/backup_db_password}
+    TZ: ${TZ:-Europe/Zagreb}
+    POSTGRES_SSL: ${POSTGRES_SSL:-on}
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 512
+  mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+  cpus: ${POSTGRES_CPUS:-1.0}
+  secrets:
+    - postgres_password
+    - app_db_password
+    - migration_db_password
+    - readonly_db_password
+    - monitoring_db_password
+    - backup_db_password
 
-  postgres_shard2:
-    image: pgvector/pgvector:pg16
-    container_name: postgres_shard2
-    restart: unless-stopped
-    command:
-      - "postgres"
-      - "-c"
-      - "wal_level=logical"
-      - "-c"
-      - "max_wal_senders=10"
-      - "-c"
-      - "max_replication_slots=10"
-      - "-c"
-      - "shared_preload_libraries=vector"
+x-app-common: &app_common
+  build:
+    context: .
+    dockerfile: app/Dockerfile
+  restart: unless-stopped
+  environment: &app_env
+    APP_ENV: ${APP_ENV:-development}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    PGUSER: ${APP_DB_USER:-app_user}
+    PGPASSWORD: ${APP_DB_PASSWORD:-}
+    PGPASSWORD_FILE: ${APP_DB_PASSWORD_FILE:-/run/secrets/app_db_password}
+    PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+    APP_DB_USER: ${APP_DB_USER:-app_user}
+    MIGRATION_DB_USER: ${MIGRATION_DB_USER:-migration_user}
+    READONLY_DB_USER: ${READONLY_DB_USER:-readonly_user}
+    MONITORING_DB_USER: ${MONITORING_DB_USER:-monitoring_user}
+    BACKUP_DB_USER: ${BACKUP_DB_USER:-backup_user}
+    PGBOUNCER_HOST: pgbouncer
+    PGBOUNCER_PORT: 6432
+    DB_SSLMODE: ${DB_SSLMODE:-verify-full}
+    DB_SSL_CA_FILE: ${DB_SSL_CA_FILE:-/run/tls/ca.crt}
+    DB_SSL_CERT_FILE: ${DB_SSL_CERT_FILE:-/run/tls/app_client.crt}
+    DB_SSL_KEY_FILE: ${DB_SSL_KEY_FILE:-/run/tls/app_client.key}
+    CITUS_WORKER_COUNT: ${CITUS_WORKER_COUNT:-2}
+    CITUS_SHARD_COUNT: ${CITUS_SHARD_COUNT:-32}
+    DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
+    DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-10}
+    DB_COMMAND_TIMEOUT_SECONDS: ${DB_COMMAND_TIMEOUT_SECONDS:-10}
+    DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-5000}
+    DB_IDLE_TRANSACTION_TIMEOUT_MS: ${DB_IDLE_TRANSACTION_TIMEOUT_MS:-10000}
+    MAX_PAYLOAD_BYTES: ${MAX_PAYLOAD_BYTES:-8192}
+    DEFAULT_LIST_LIMIT: ${DEFAULT_LIST_LIMIT:-50}
+    MAX_LIST_LIMIT: ${MAX_LIST_LIMIT:-500}
+    APP_API_KEY_READ: ${APP_API_KEY_READ:-}
+    APP_API_KEY_WRITE: ${APP_API_KEY_WRITE:-}
+    APP_API_KEY_ADMIN: ${APP_API_KEY_ADMIN:-}
+    APP_API_KEY_READ_FILE: ${APP_API_KEY_READ_FILE:-/run/secrets/app_api_key_read}
+    APP_API_KEY_WRITE_FILE: ${APP_API_KEY_WRITE_FILE:-/run/secrets/app_api_key_write}
+    APP_API_KEY_ADMIN_FILE: ${APP_API_KEY_ADMIN_FILE:-/run/secrets/app_api_key_admin}
+    REQUIRE_API_KEY: ${REQUIRE_API_KEY:-false}
+    AUTH_MODE: ${AUTH_MODE:-api_key}
+    JWT_SECRET: ${JWT_SECRET:-}
+    JWT_SECRET_FILE: ${JWT_SECRET_FILE:-/run/secrets/jwt_secret}
+    JWT_ISSUER: ${JWT_ISSUER:-orders-demo}
+    JWT_AUDIENCE: ${JWT_AUDIENCE:-orders-api}
+    ENFORCE_TENANT_AUTH: ${ENFORCE_TENANT_AUTH:-true}
+    RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+    RATE_LIMIT_BACKEND: ${RATE_LIMIT_BACKEND:-redis}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    METRICS_AUTH_ENABLED: ${METRICS_AUTH_ENABLED:-false}
+    METRICS_TOKEN: ${METRICS_TOKEN:-}
+    METRICS_TOKEN_FILE: ${METRICS_TOKEN_FILE:-/run/secrets/metrics_token}
+    RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-300}
+    RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+    IDEMPOTENCY_RETENTION_DAYS: ${IDEMPOTENCY_RETENTION_DAYS:-7}
+  depends_on:
+    pgbouncer:
+      condition: service_started
+    redis:
+      condition: service_started
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  cap_drop:
+    - ALL
+  pids_limit: 256
+  mem_limit: ${APP_MEM_LIMIT:-512m}
+  cpus: ${APP_CPUS:-0.50}
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  volumes:
+    - ./infra/tls/certs:/run/tls:ro
+  secrets:
+    - app_db_password
+    - migration_db_password
+    - app_api_key_read
+    - app_api_key_write
+    - app_api_key_admin
+    - jwt_secret
+    - metrics_token
+
+services:
+  citus_coordinator:
+    <<: *citus_common
     ports:
-      - "5434:5432"
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-gr5}
-      POSTGRES_USER: ${POSTGRES_USER:-gr5}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
-      TZ: Europe/Berlin
+      - "127.0.0.1:5432:5432"
     volumes:
-      - ./shared/data/postgres_shard2:/var/lib/postgresql/data
+      - ./shared/data/citus_coordinator:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gr5} -d ${POSTGRES_DB:-gr5}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
+      - ./infra/tls/certs:/certs:ro
+
+  citus_worker1:
+    <<: *citus_common
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ./shared/data/citus_worker1:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./infra/tls/certs:/certs:ro
+
+  citus_worker2:
+    <<: *citus_common
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - ./shared/data/citus_worker2:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./infra/tls/certs:/certs:ro
 
   pgbouncer:
     build:
       context: ./infra/pgbouncer
-    container_name: pgbouncer
     restart: unless-stopped
     ports:
-      - "6432:6432"
+      - "127.0.0.1:6432:6432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-/run/secrets/postgres_password}
+      APP_DB_USER: ${APP_DB_USER:-app_user}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-}
+      APP_DB_PASSWORD_FILE: ${APP_DB_PASSWORD_FILE:-/run/secrets/app_db_password}
+      MIGRATION_DB_USER: ${MIGRATION_DB_USER:-migration_user}
+      MIGRATION_DB_PASSWORD: ${MIGRATION_DB_PASSWORD:-}
+      MIGRATION_DB_PASSWORD_FILE: ${MIGRATION_DB_PASSWORD_FILE:-/run/secrets/migration_db_password}
+      CITUS_COORDINATOR_HOST: citus_coordinator
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-500}
+      PGBOUNCER_DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      PGBOUNCER_RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-5}
+      PGBOUNCER_CLIENT_TLS_SSLMODE: ${PGBOUNCER_CLIENT_TLS_SSLMODE:-verify-ca}
+      PGBOUNCER_SERVER_TLS_SSLMODE: ${PGBOUNCER_SERVER_TLS_SSLMODE:-verify-full}
     depends_on:
-      postgres_shard1:
+      citus_coordinator:
         condition: service_healthy
-      postgres_shard2:
-        condition: service_healthy
+    volumes:
+      - ./infra/tls/certs:/certs:ro
+    read_only: true
+    tmpfs:
+      - /etc/pgbouncer:rw,noexec,nosuid,size=4m
+      - /var/lib/pgbouncer:rw,noexec,nosuid,size=4m
+      - /var/run/pgbouncer:rw,noexec,nosuid,size=4m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: ${PGBOUNCER_MEM_LIMIT:-256m}
+    cpus: ${PGBOUNCER_CPUS:-0.25}
+    secrets:
+      - postgres_password
+      - app_db_password
+      - migration_db_password
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./shared/data/redis:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: ${REDIS_MEM_LIMIT:-256m}
+    cpus: ${REDIS_CPUS:-0.25}
 
   writer_service:
-    build:
-      context: .
-      dockerfile: app/Dockerfile
-    container_name: writer_service
-    restart: unless-stopped
-    command: ["uvicorn", "app.writer_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    <<: *app_common
+    command: ["uvicorn", "app.writer_service.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
     environment:
-      PGUSER: ${POSTGRES_USER:-gr5}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
-      PGBOUNCER_HOST: pgbouncer
-      PGBOUNCER_PORT: 6432
-      SHARD_COUNT: 2
-      SNOWFLAKE_WORKER_ID: 1
-    depends_on:
-      - pgbouncer
+      <<: *app_env
+      SERVICE_NAME: writer_service
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=3)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   reader_service:
-    build:
-      context: .
-      dockerfile: app/Dockerfile
-    container_name: reader_service
-    restart: unless-stopped
-    command: ["uvicorn", "app.reader_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    <<: *app_common
+    command: ["uvicorn", "app.reader_service.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
     ports:
-      - "8002:8000"
+      - "127.0.0.1:8002:8000"
     environment:
-      PGUSER: ${POSTGRES_USER:-gr5}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
-      PGBOUNCER_HOST: pgbouncer
-      PGBOUNCER_PORT: 6432
-      SHARD_COUNT: 2
-      SNOWFLAKE_WORKER_ID: 2
-    depends_on:
-      - pgbouncer
+      <<: *app_env
+      SERVICE_NAME: reader_service
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=3)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   producer_service:
-    build:
-      context: .
-      dockerfile: app/Dockerfile
-    container_name: producer_service
-    restart: unless-stopped
+    <<: *app_common
+    profiles: ["producer"]
     command: ["python", "-m", "app.producer_service.main"]
     environment:
-      PGUSER: ${POSTGRES_USER:-gr5}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
-      PGBOUNCER_HOST: pgbouncer
-      PGBOUNCER_PORT: 6432
-      SHARD_COUNT: 2
-      SNOWFLAKE_WORKER_ID: 3
-      PRODUCER_INTERVAL_SECONDS: 2
-    depends_on:
-      - pgbouncer
+      <<: *app_env
+      SERVICE_NAME: producer_service
+      PRODUCER_INTERVAL_SECONDS: ${PRODUCER_INTERVAL_SECONDS:-2}
 
   wal_monitor:
     build:
       context: .
       dockerfile: app/Dockerfile
-    container_name: wal_monitor
+    profiles: ["wal"]
     restart: unless-stopped
     command: ["python", "-m", "app.wal_monitor.main"]
     environment:
-      PGUSER: ${POSTGRES_USER:-gr5}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-admin}
-      PGDATABASE: ${POSTGRES_DB:-gr5}
-      SHARD1_HOST: postgres_shard1
-      SHARD2_HOST: postgres_shard2
-      SHARD_COUNT: 2
-      WAL_POLL_SECONDS: 3
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-}
+      PGPASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-/run/secrets/postgres_password}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_HOST: citus_coordinator
+      WAL_POLL_SECONDS: ${WAL_POLL_SECONDS:-3}
     depends_on:
-      postgres_shard1:
+      citus_coordinator:
         condition: service_healthy
-      postgres_shard2:
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: ${WAL_MONITOR_MEM_LIMIT:-256m}
+    cpus: ${WAL_MONITOR_CPUS:-0.25}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    volumes:
+      - ./infra/tls/certs:/run/tls:ro
+    secrets:
+      - postgres_password
+
+  gateway:
+    image: nginx:1.27-alpine
+    profiles: ["gateway"]
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_HTTP_BIND:-127.0.0.1:8080}:80"
+      - "${GATEWAY_HTTPS_BIND:-127.0.0.1:8443}:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      writer_service:
         condition: service_healthy
+      reader_service:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=32m
+      - /var/run:rw,noexec,nosuid,size=8m
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: ${NGINX_MEM_LIMIT:-256m}
+    cpus: ${NGINX_CPUS:-0.25}
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./shared/data/prometheus:/prometheus
+    secrets:
+      - metrics_token
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-512m}
+    cpus: ${PROMETHEUS_CPUS:-0.50}
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_URI: "citus_coordinator:5432/${POSTGRES_DB}?sslmode=verify-full&sslrootcert=/run/tls/ca.crt"
+      DATA_SOURCE_USER: ${MONITORING_DB_USER:-monitoring_user}
+      DATA_SOURCE_PASS_FILE: /run/secrets/monitoring_db_password
+    volumes:
+      - ./infra/tls/certs:/run/tls:ro
+    secrets:
+      - monitoring_db_password
+    depends_on:
+      citus_coordinator:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: ${POSTGRES_EXPORTER_MEM_LIMIT:-128m}
+    cpus: ${POSTGRES_EXPORTER_CPUS:-0.25}
+
+secrets:
+  postgres_password:
+    file: ${POSTGRES_PASSWORD_SECRET_FILE:-./docker/secrets/postgres_password.txt}
+  app_db_password:
+    file: ${APP_DB_PASSWORD_SECRET_FILE:-./docker/secrets/app_db_password.txt}
+  migration_db_password:
+    file: ${MIGRATION_DB_PASSWORD_SECRET_FILE:-./docker/secrets/migration_db_password.txt}
+  readonly_db_password:
+    file: ${READONLY_DB_PASSWORD_SECRET_FILE:-./docker/secrets/readonly_db_password.txt}
+  monitoring_db_password:
+    file: ${MONITORING_DB_PASSWORD_SECRET_FILE:-./docker/secrets/monitoring_db_password.txt}
+  backup_db_password:
+    file: ${BACKUP_DB_PASSWORD_SECRET_FILE:-./docker/secrets/backup_db_password.txt}
+  app_api_key_read:
+    file: ${APP_API_KEY_READ_SECRET_FILE:-./docker/secrets/app_api_key_read.txt}
+  app_api_key_write:
+    file: ${APP_API_KEY_WRITE_SECRET_FILE:-./docker/secrets/app_api_key_write.txt}
+  app_api_key_admin:
+    file: ${APP_API_KEY_ADMIN_SECRET_FILE:-./docker/secrets/app_api_key_admin.txt}
+  jwt_secret:
+    file: ${JWT_SECRET_SECRET_FILE:-./docker/secrets/jwt_secret.txt}
+  metrics_token:
+    file: ${METRICS_TOKEN_SECRET_FILE:-./docker/secrets/metrics_token.txt}

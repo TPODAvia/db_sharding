@@ -1,63 +1,61 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 
 import psycopg
 
-USER = os.getenv("PGUSER", "gr5")
-PASSWORD = os.getenv("PGPASSWORD", "admin")
+from app.common.env import get_env_or_file
+
+USER = os.environ["PGUSER"]
+PASSWORD = get_env_or_file("PGPASSWORD") or ""
 DATABASE = os.getenv("PGDATABASE", "gr5")
+HOST = os.getenv("POSTGRES_HOST", "citus_coordinator")
 POLL_SECONDS = float(os.getenv("WAL_POLL_SECONDS", "3"))
-SHARDS = [
-    (1, os.getenv("SHARD1_HOST", "postgres_shard1")),
-    (2, os.getenv("SHARD2_HOST", "postgres_shard2")),
-]
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+logging.basicConfig(level=LOG_LEVEL)
+logger = logging.getLogger(__name__)
 
 
-def connect(host: str) -> psycopg.Connection:
+def connect() -> psycopg.Connection:
     return psycopg.connect(
-        host=host,
+        host=HOST,
         port=5432,
         dbname=DATABASE,
         user=USER,
         password=PASSWORD,
         autocommit=True,
+        connect_timeout=10,
     )
 
 
-def ensure_slot(conn: psycopg.Connection, slot_name: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM pg_replication_slots WHERE slot_name = %s", (slot_name,))
-        if cur.fetchone() is None:
-            cur.execute("SELECT pg_create_logical_replication_slot(%s, 'test_decoding')", (slot_name,))
-
-
-def read_changes(conn: psycopg.Connection, slot_name: str, shard_number: int) -> None:
+def read_cluster_status(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT pg_current_wal_lsn()")
         current_lsn = cur.fetchone()[0]
-        cur.execute("SELECT lsn, xid, data FROM pg_logical_slot_get_changes(%s, NULL, 20)", (slot_name,))
-        rows = cur.fetchall()
-        if not rows:
-            print(f"shard={shard_number} current_wal_lsn={current_lsn} no new decoded WAL changes", flush=True)
-            return
-        for lsn, xid, data in rows:
-            print(f"shard={shard_number} lsn={lsn} xid={xid} data={data}", flush=True)
+        cur.execute("SELECT count(*) FROM citus_get_active_worker_nodes()")
+        active_workers = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM pg_dist_shard")
+        distributed_shards = cur.fetchone()[0]
+        logger.info(
+            "coordinator_wal_lsn=%s active_workers=%s distributed_shards=%s",
+            current_lsn,
+            active_workers,
+            distributed_shards,
+        )
 
 
 def main() -> None:
-    connections: list[tuple[int, psycopg.Connection, str]] = []
-    for shard_number, host in SHARDS:
-        conn = connect(host)
-        slot_name = f"orders_slot_s{shard_number}"
-        ensure_slot(conn, slot_name)
-        connections.append((shard_number, conn, slot_name))
-        print(f"logical decoding slot ready: shard={shard_number} slot={slot_name}", flush=True)
-
+    conn = connect()
     while True:
-        for shard_number, conn, slot_name in connections:
-            read_changes(conn, slot_name, shard_number)
+        try:
+            read_cluster_status(conn)
+        except Exception:  # noqa: BLE001
+            logger.exception("Citus status read failed; reconnecting")
+            conn.close()
+            conn = connect()
         time.sleep(POLL_SECONDS)
 
 

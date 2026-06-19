@@ -1,0 +1,32 @@
+[pgbouncer]
+listen_addr = 0.0.0.0
+listen_port = 6432
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+admin_users = ${POSTGRES_USER}
+pool_mode = transaction
+max_client_conn = ${PGBOUNCER_MAX_CLIENT_CONN}
+default_pool_size = ${PGBOUNCER_DEFAULT_POOL_SIZE}
+reserve_pool_size = ${PGBOUNCER_RESERVE_POOL_SIZE}
+server_reset_query = DISCARD ALL
+ignore_startup_parameters = extra_float_digits,options
+server_check_query = SELECT 1
+server_check_delay = 30
+query_timeout = 30
+client_idle_timeout = 300
+idle_transaction_timeout = 60
+log_connections = 1
+log_disconnections = 1
+log_pooler_errors = 1
+
+# Client-side TLS: app -> PgBouncer. In production use verify-ca mTLS for client certificates.
+client_tls_sslmode = ${PGBOUNCER_CLIENT_TLS_SSLMODE}
+client_tls_ca_file = /var/lib/pgbouncer/tls/ca.crt
+client_tls_cert_file = /var/lib/pgbouncer/tls/pgbouncer_server.crt
+client_tls_key_file = /var/lib/pgbouncer/tls/pgbouncer_server.key
+
+# Server-side TLS: PgBouncer -> Citus coordinator/PostgreSQL.
+server_tls_sslmode = ${PGBOUNCER_SERVER_TLS_SSLMODE}
+server_tls_ca_file = /var/lib/pgbouncer/tls/ca.crt
+server_tls_cert_file = /var/lib/pgbouncer/tls/pgbouncer_client.crt
+server_tls_key_file = /var/lib/pgbouncer/tls/pgbouncer_client.key

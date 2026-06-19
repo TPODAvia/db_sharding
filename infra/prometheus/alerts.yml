@@ -1,0 +1,38 @@
+groups:
+  - name: orders-service
+    rules:
+      - alert: OrdersServiceHigh5xxRate
+        expr: increase(app_http_5xx_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Orders service 5xx rate is high
+      - alert: OrdersServiceAuthFailuresSpike
+        expr: increase(app_auth_failures_total[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Authentication failures spike
+      - alert: OrdersServiceRateLimitedSpike
+        expr: increase(app_rate_limited_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Many requests are being rate limited
+      - alert: CitusWorkersUnavailable
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL/Citus exporter reports database unavailable
+      - alert: PostgresDiskWillFillSoon
+        expr: predict_linear(pg_database_size_bytes[6h], 24 * 3600) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Database disk usage trend should be reviewed

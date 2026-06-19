@@ -1,0 +1,121 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+      - name: Compile Python
+        run: python -m compileall app scripts alembic tests
+      - name: Ruff lint
+        run: ruff check app scripts tests
+      - name: Ruff format check
+        run: ruff format --check app scripts tests
+      - name: Bandit security scan
+        run: bandit -r app scripts -x tests
+      - name: Supply-chain audit
+        run: pip-audit -r app/requirements.txt --strict
+      - name: Python tests
+        env:
+          PGUSER: gr5
+          PGPASSWORD: test
+          PGDATABASE: gr5
+          AUTH_MODE: disabled
+          RATE_LIMIT_BACKEND: memory
+          DB_SSLMODE: disable
+        run: pytest -q
+      - name: Generate local secrets and TLS certs
+        run: |
+          ./scripts/init_secrets.sh
+          ./scripts/init_tls_certs.sh
+      - name: Generate Citus worker compose
+        run: python scripts/render_citus_workers_compose.py 3
+      - name: Validate Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml -f docker-compose.workers.yml config >/tmp/compose.yml
+      - name: Check production hygiene
+        run: ./scripts/check_production_hygiene.sh
+
+  container-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate local TLS certs for image/compose validation
+        run: ./scripts/init_tls_certs.sh
+      - name: Build application and infrastructure images
+        run: |
+          docker build -f app/Dockerfile -t orders-app:ci .
+          docker build -f infra/pgbouncer/Dockerfile -t orders-pgbouncer:ci infra/pgbouncer
+          docker build -f infra/citus.Dockerfile --build-arg CITUS_IMAGE=citusdata/citus:14-pg16 -t orders-citus:ci .
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Trivy image scan app
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: orders-app:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+  citus-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare env, secrets and TLS certs
+        run: |
+          cp .env.example .env
+          ./scripts/init_secrets.sh
+          ./scripts/init_tls_certs.sh
+          python scripts/render_citus_workers_compose.py 2
+      - name: Build images
+        run: docker compose -f docker-compose.yml -f docker-compose.workers.yml build writer_service reader_service pgbouncer citus_coordinator citus_worker1 citus_worker2
+      - name: Bootstrap Citus cluster
+        run: ./scripts/init_citus_cluster.sh 2
+      - name: Verify Citus metadata
+        run: |
+          set -a
+          source .env
+          set +a
+          docker compose -f docker-compose.yml -f docker-compose.workers.yml exec -T citus_coordinator \
+            psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < tests/integration/test_citus_cluster.sql
+      - name: Smoke test API health
+        run: |
+          curl -fsS http://127.0.0.1:8001/health
+          curl -fsS http://127.0.0.1:8002/health
+      - name: Logical backup verification
+        run: |
+          ./scripts/backup_all_shards.sh
+          latest=$(ls -dt shared/backups/* | head -1)
+          ./scripts/verify_backup.sh "$latest"
+      - name: Shutdown
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.workers.yml down -v
