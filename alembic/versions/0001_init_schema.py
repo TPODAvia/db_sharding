@@ -24,8 +24,13 @@ def quote_ident(identifier: str) -> str:
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS citus")
+    # Citus DDL in one Alembic transaction can otherwise fail after distributed
+    # operations. Keep multi-shard metadata/DDL operations on one connection per node.
+    op.execute("SET LOCAL citus.multi_shard_modify_mode TO 'sequential'")
+
     citus_shard_count = int(os.getenv("CITUS_SHARD_COUNT", "32"))
     op.execute(f"SET citus.shard_count = {citus_shard_count}")
+
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS orders (
@@ -54,6 +59,14 @@ def upgrade() -> None:
         )
         """
     )
+
+    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_id ON orders (id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_created_id ON orders (user_id, created_at DESC, id DESC)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_pending_created_id ON orders (created_at DESC, id DESC) WHERE status = 'pending'")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_created_at_brin ON orders USING brin (created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_idempotency_created_at ON idempotency_keys (created_at)")
+
+
     op.execute(
         """
         DO $$
@@ -79,27 +92,8 @@ def upgrade() -> None:
         $$
         """
     )
-    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_id ON orders (id)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_created_id ON orders (user_id, created_at DESC, id DESC)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_pending_created_id ON orders (created_at DESC, id DESC) WHERE status = 'pending'")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_orders_created_at_brin ON orders USING brin (created_at)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_idempotency_created_at ON idempotency_keys (created_at)")
-    op.execute(
-        """
-        CREATE OR REPLACE FUNCTION set_updated_at()
-        RETURNS trigger
-        LANGUAGE plpgsql
-        AS $$
-        BEGIN
-            NEW.updated_at = now();
-            RETURN NEW;
-        END;
-        $$
-        """
-    )
-    for table in ("orders", "idempotency_keys"):
-        op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_updated_at ON {table}")
-        op.execute(f"CREATE TRIGGER trg_{table}_updated_at BEFORE UPDATE ON {table} FOR EACH ROW EXECUTE FUNCTION set_updated_at()")
+
+
 
     app_user = os.getenv("APP_DB_USER", "app_user")
     readonly_user = os.getenv("READONLY_DB_USER", "readonly_user")

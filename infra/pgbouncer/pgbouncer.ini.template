@@ -1,6 +1,8 @@
 [pgbouncer]
 listen_addr = 0.0.0.0
 listen_port = 6432
+# Disable Unix domain sockets because container root filesystem is read-only.
+unix_socket_dir =
 auth_type = scram-sha-256
 auth_file = /etc/pgbouncer/userlist.txt
 admin_users = ${POSTGRES_USER}

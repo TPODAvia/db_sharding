@@ -53,7 +53,7 @@ export POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD APP_DB_USER MIGRATION_DB_USER
   echo "[databases]"
   echo "${POSTGRES_DB} = host=${CITUS_COORDINATOR_HOST} port=5432 dbname=${POSTGRES_DB}"
   echo
-  envsubst < /etc/pgbouncer/pgbouncer.ini.template
+  envsubst < /usr/local/share/pgbouncer/pgbouncer.ini.template
 } > /etc/pgbouncer/pgbouncer.ini
 
 {

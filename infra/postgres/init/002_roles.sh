@@ -35,14 +35,21 @@ done
 create_login_role() {
   local role="$1"
   local password="$2"
+
   psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
     -v role_name="$role" -v role_password="$password" <<'SQL'
+SET citus_demo.role_name = :'role_name';
+SET citus_demo.role_password = :'role_password';
+
 DO $$
+DECLARE
+  v_role_name text := current_setting('citus_demo.role_name');
+  v_role_password text := current_setting('citus_demo.role_password');
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role_name') THEN
-    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', :'role_name', :'role_password');
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role_name) THEN
+    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', v_role_name, v_role_password);
   ELSE
-    EXECUTE format('ALTER ROLE %I LOGIN PASSWORD %L', :'role_name', :'role_password');
+    EXECUTE format('ALTER ROLE %I LOGIN PASSWORD %L', v_role_name, v_role_password);
   END IF;
 END
 $$;

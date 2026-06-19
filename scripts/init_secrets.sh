@@ -6,7 +6,7 @@ umask 077
 make_secret() {
   local target="$1"
   if [[ ! -f "$target" ]]; then
-    python - <<'PY' > "$target"
+    python3 - <<'PY' > "$target"
 import secrets
 print(secrets.token_urlsafe(48))
 PY

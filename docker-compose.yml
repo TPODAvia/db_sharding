@@ -26,7 +26,6 @@ x-citus-common: &citus_common
   environment: &postgres_env
     POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
     POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
-    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-/run/secrets/postgres_password}
     APP_DB_USER: ${APP_DB_USER:-app_user}
     APP_DB_PASSWORD: ${APP_DB_PASSWORD:-}
@@ -52,8 +51,17 @@ x-citus-common: &citus_common
     retries: 30
   security_opt:
     - no-new-privileges:true
+  # PostgreSQL/Citus official entrypoint must chown the data directory and TLS keys
+  # before it drops privileges to the postgres user. Keep a minimal capability set
+  # instead of cap_drop: ALL; otherwise the container restarts with EPERM during TLS init.
   cap_drop:
     - ALL
+  cap_add:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+    - SETUID
+    - SETGID
   pids_limit: 512
   mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
   cpus: ${POSTGRES_CPUS:-1.0}
@@ -209,8 +217,16 @@ services:
       - /var/run/pgbouncer:rw,noexec,nosuid,size=4m
     security_opt:
       - no-new-privileges:true
+    # PgBouncer entrypoint renders config and fixes TLS key ownership in tmpfs.
+    # It needs a tiny capability allow-list, then runs the daemon as pgbouncer.
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
     pids_limit: 256
     mem_limit: ${PGBOUNCER_MEM_LIMIT:-256m}
     cpus: ${PGBOUNCER_CPUS:-0.25}
@@ -232,6 +248,14 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Redis official entrypoint starts as root, chowns /data, then drops to redis user.
+    # Keep the minimal capabilities needed for that startup step.
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
     pids_limit: 256
     mem_limit: ${REDIS_MEM_LIMIT:-256m}
     cpus: ${REDIS_CPUS:-0.25}
@@ -283,7 +307,6 @@ services:
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-}
       PGPASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-/run/secrets/postgres_password}
       PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
       POSTGRES_HOST: citus_coordinator
